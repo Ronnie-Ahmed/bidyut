@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::status;
 
+use std::future::Future;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -44,6 +45,14 @@ const CLAIM_SQL: &str = "
     JOIN subscriptions s ON s.id = c.subscription_id
     JOIN cells ce ON ce.id = c.cell_id";
 
+async fn default_send(
+    device_id: Uuid,
+    lat_idx: i32,
+    lng_idx: i32,
+    kind: String,
+) -> Result<(), String> {
+    deliver(device_id, lat_idx, lng_idx, &kind).await
+}
 async fn dispatch_loop(pool: PgPool, shutdown: CancellationToken) {
     let mut ticker = tokio::time::interval(DISPATCH_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -58,7 +67,7 @@ async fn dispatch_loop(pool: PgPool, shutdown: CancellationToken) {
             if shutdown.is_cancelled() {
                 break;
             }
-            match dispatch_batch(&pool).await {
+            match dispatch_batch(&pool, default_send).await {
                 // A full batch means more may be waiting: go again immediately.
                 Ok(n) if n >= BATCH as usize => continue,
                 Ok(_) => break,
@@ -71,7 +80,11 @@ async fn dispatch_loop(pool: PgPool, shutdown: CancellationToken) {
     }
     tracing::info!("notification dispatcher stopped");
 }
-async fn dispatch_batch(pool: &PgPool) -> Result<usize, sqlx::Error> {
+pub(crate) async fn dispatch_batch<F, Fut>(pool: &PgPool, send: F) -> Result<usize, sqlx::Error>
+where
+    F: Fn(Uuid, i32, i32, String) -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
     let rows: Vec<(i64, Uuid, i32, i32, String, i32)> = sqlx::query_as(CLAIM_SQL)
         .bind(BATCH)
         .bind(LEASE_SECS)
@@ -81,7 +94,7 @@ async fn dispatch_batch(pool: &PgPool) -> Result<usize, sqlx::Error> {
     let count = rows.len();
 
     for (id, device_id, lat_idx, lng_idx, kind, attempts) in rows {
-        match deliver(device_id, lat_idx, lng_idx, &kind).await {
+        match send(device_id, lat_idx, lng_idx, kind).await {
             Ok(()) => {
                 sqlx::query(
                     "UPDATE notifications
@@ -196,7 +209,7 @@ async fn expire_loop(pool: PgPool, shutdown: CancellationToken) {
     tracing::info!("stale outage scanner stopped");
 }
 
-async fn expire_stale_outages(pool: &PgPool) -> Result<(), sqlx::Error> {
+pub(crate) async fn expire_stale_outages(pool: &PgPool) -> Result<(), sqlx::Error> {
     let candidates: Vec<i64> = sqlx::query_scalar(CANDIDATES_SQL)
         .bind(STALE_OUTAGE_SECS)
         .fetch_all(pool)
@@ -236,6 +249,7 @@ async fn expire_cell(pool: &PgPool, cell_id: i64) -> Result<(), sqlx::Error> {
 
         let queued = status::enqueue_notifications(&mut *tx, cell_id, "expired").await?;
         tracing::info!(cell_id, queued, "stale outage expired");
+        metrics::counter!("outages_expired_total").increment(1);
     }
 
     tx.commit().await?;

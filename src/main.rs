@@ -3,6 +3,8 @@ mod device;
 mod error;
 mod grid;
 mod health;
+#[cfg(test)]
+mod integration_tests;
 mod layers;
 mod observability;
 mod ratelimit;
@@ -13,7 +15,6 @@ mod state;
 mod status;
 mod subscriptions;
 mod worker;
-
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
