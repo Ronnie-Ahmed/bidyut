@@ -1,14 +1,15 @@
 mod error;
 mod grid;
+mod read;
 mod reports;
-
+mod status;
 use axum::{
+    Router,
     extract::State,
     http::StatusCode,
     routing::{get, post},
-    Router,
 };
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 
 #[tokio::main]
 async fn main() {
@@ -26,6 +27,9 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health))
         .route("/reports", post(reports::create_report))
+        .route("/status", get(read::get_status))
+        .route("/history", get(read::get_history))
+        .route("/stats", get(read::get_stats))
         .with_state(pool);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")

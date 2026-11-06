@@ -30,7 +30,13 @@ mod tests {
     #[test]
     fn dhaka_maps_to_expected_cell() {
         let cell = cell_for(23.8103, 90.4125);
-        assert_eq!(cell, CellIndex { lat_idx: 2381, lng_idx: 9041 });
+        assert_eq!(
+            cell,
+            CellIndex {
+                lat_idx: 2381,
+                lng_idx: 9041
+            }
+        );
     }
 
     #[test]

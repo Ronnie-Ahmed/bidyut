@@ -1,9 +1,8 @@
-use axum::{extract::State, http::StatusCode, Json};
+use crate::{error::AppError, grid, status};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
-
-use crate::{error::AppError, grid};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -35,16 +34,14 @@ pub struct ReportCreated {
     cell_id: i64,
     lat_idx: i32,
     lng_idx: i32,
+    cell_status: &'static str,
 }
 
 pub async fn create_report(
     State(pool): State<PgPool>,
     Json(body): Json<CreateReport>,
 ) -> Result<(StatusCode, Json<ReportCreated>), AppError> {
-    if !body.lat.is_finite()
-        || !body.lng.is_finite()
-        || !grid::in_bangladesh(body.lat, body.lng)
-    {
+    if !body.lat.is_finite() || !body.lng.is_finite() || !grid::in_bangladesh(body.lat, body.lng) {
         return Err(AppError::Validation(
             "location must be inside Bangladesh".to_string(),
         ));
@@ -77,6 +74,8 @@ pub async fn create_report(
     .fetch_one(&mut *tx)
     .await?;
 
+    let cell_status = status::evaluate_cell(&mut *tx, cell_id).await?;
+
     tx.commit().await?;
 
     Ok((
@@ -86,6 +85,7 @@ pub async fn create_report(
             cell_id,
             lat_idx: cell.lat_idx,
             lng_idx: cell.lng_idx,
+            cell_status: cell_status.as_str(),
         }),
     ))
 }
