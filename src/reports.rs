@@ -1,8 +1,17 @@
-use crate::{error::AppError, grid, status};
-use axum::{Json, extract::State, http::StatusCode};
+use std::net::SocketAddr;
+
+use axum::{
+    extract::{ConnectInfo, State},
+    http::{HeaderMap, StatusCode},
+    Json,
+};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
-use uuid::Uuid;
+
+use crate::{device, error::AppError, grid, ratelimit, state::AppState, status};
+
+const REPORT_WINDOW_SECS: i64 = 600; // 10 minutes
+const REPORTS_PER_IP: i64 = 60;
+const REPORTS_PER_DEVICE: i64 = 6;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -22,7 +31,7 @@ impl ReportKind {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateReport {
-    device_id: Uuid,
+    device_token: String,
     kind: ReportKind,
     lat: f64,
     lng: f64,
@@ -38,10 +47,36 @@ pub struct ReportCreated {
 }
 
 pub async fn create_report(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<CreateReport>,
 ) -> Result<(StatusCode, Json<ReportCreated>), AppError> {
-    if !body.lat.is_finite() || !body.lng.is_finite() || !grid::in_bangladesh(body.lat, body.lng) {
+    // Cheapest checks first: per-IP limit, then token, then per-device limit.
+    let ip = ratelimit::client_ip(peer, &headers, state.trust_proxy);
+    ratelimit::check(
+        &state.redis,
+        &format!("rl:reports:ip:{}", ratelimit::ip_key(ip)),
+        REPORTS_PER_IP,
+        REPORT_WINDOW_SECS,
+    )
+    .await?;
+
+    let device_id = device::verify_token(&state.device_secret, &body.device_token)
+        .ok_or_else(|| AppError::Unauthorized("invalid device token".to_string()))?;
+
+    ratelimit::check(
+        &state.redis,
+        &format!("rl:reports:dev:{device_id}"),
+        REPORTS_PER_DEVICE,
+        REPORT_WINDOW_SECS,
+    )
+    .await?;
+
+    if !body.lat.is_finite()
+        || !body.lng.is_finite()
+        || !grid::in_bangladesh(body.lat, body.lng)
+    {
         return Err(AppError::Validation(
             "location must be inside Bangladesh".to_string(),
         ));
@@ -49,7 +84,7 @@ pub async fn create_report(
 
     let cell = grid::cell_for(body.lat, body.lng);
 
-    let mut tx = pool.begin().await?;
+    let mut tx = state.pool.begin().await?;
 
     let cell_id: i64 = sqlx::query_scalar(
         "INSERT INTO cells (lat_idx, lng_idx) VALUES ($1, $2)
@@ -67,7 +102,7 @@ pub async fn create_report(
          RETURNING id",
     )
     .bind(cell_id)
-    .bind(body.device_id)
+    .bind(device_id)
     .bind(body.kind.as_str())
     .bind(body.lat)
     .bind(body.lng)
