@@ -41,9 +41,22 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
-      # sqlx::test creates a throwaway database per test from this server.
+      # sqlx needs to connect to a default maintenance DB to manage test databases
       DATABASE_URL: postgres://bidyut:ci_only_throwaway_password@127.0.0.1:5432/bidyut
+      REDIS_URL: redis://127.0.0.1:6379
+      DEVICE_TOKEN_SECRET: 1f15401bb8f6fa627dbd4f291103be493fea83cc2c546771fe4485b2ff1f66eb
+      RUST_LOG: info
 
     steps:
       - name: Check out the code
