@@ -3,16 +3,20 @@ name: CI
 
 on:
   push:
+    branches: ["main"]
   pull_request:
+    branches: ["main"]
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  build:
+    name: Build, Lint & Test
     runs-on: ubuntu-latest
 
     env:
+      CARGO_TERM_COLOR: always
       DATABASE_URL: postgres://bidyut:ci_only_throwaway_password@127.0.0.1:5432/bidyut
       REDIS_URL: redis://127.0.0.1:6379
       RUST_LOG: info
@@ -51,7 +55,7 @@ jobs:
           --health-retries 10
 
     steps:
-      - name: Check out the code
+      - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
@@ -65,16 +69,17 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Build
+        run: cargo build --locked --verbose
+
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Verify service configuration
+      - name: Verify environment
         run: |
-          echo "Checking database configuration..."
           test -n "$DATABASE_URL"
           test -n "$REDIS_URL"
-          echo "DATABASE_URL is configured"
-          echo "REDIS_URL is configured"
+          echo "Database and Redis environment configured."
 
       - name: Run tests
         run: cargo test --locked --verbose
