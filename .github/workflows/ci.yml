@@ -1,0 +1,85 @@
+
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, Lint & Test
+    runs-on: ubuntu-latest
+
+    env:
+      CARGO_TERM_COLOR: always
+      DATABASE_URL: postgres://bidyut:ci_only_throwaway_password@127.0.0.1:5432/bidyut
+      REDIS_URL: redis://127.0.0.1:6379
+      RUST_LOG: info
+      DEVICE_TOKEN_SECRET: 1f15401bb8f6fa627dbd4f291103be493fea83cc2c546771fe4485b2ff1f66eb
+      TRUST_PROXY: "false"
+      LOG_FORMAT: pretty
+      BIND_ADDR: 0.0.0.0:3000
+      METRICS_ADDR: 127.0.0.1:9090
+      DB_MAX_CONNECTIONS: 10
+      REQUEST_TIMEOUT_SECS: 10
+      MAX_BODY_BYTES: 16384
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bidyut
+          POSTGRES_PASSWORD: ci_only_throwaway_password
+          POSTGRES_DB: bidyut
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bidyut -d bidyut"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          rustc --version
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build
+        run: cargo build --locked --verbose
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Verify environment
+        run: |
+          test -n "$DATABASE_URL"
+          test -n "$REDIS_URL"
+          echo "Database and Redis environment configured."
+
+      - name: Run tests
+        run: cargo test --locked --verbose
