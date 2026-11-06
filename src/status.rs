@@ -97,7 +97,8 @@ pub async fn evaluate_cell(conn: &mut PgConnection, cell_id: i64) -> Result<Stat
                 .execute(&mut *conn)
                 .await?;
 
-            tracing::info!(cell_id, down_votes, "cell went down");
+            let queued = enqueue_notifications(&mut *conn, cell_id, "down").await?;
+            tracing::info!(cell_id, down_votes, queued, "cell went down");
             Ok(Status::Down)
         }
         Decision::GoUp => {
@@ -109,18 +110,37 @@ pub async fn evaluate_cell(conn: &mut PgConnection, cell_id: i64) -> Result<Stat
             .await?;
 
             sqlx::query(
-                "UPDATE outage_events SET ended_at = clock_timestamp()
+                "UPDATE outage_events SET ended_at = clock_timestamp(), closed_by = 'reports'
                  WHERE cell_id = $1 AND ended_at IS NULL",
             )
             .bind(cell_id)
             .execute(&mut *conn)
             .await?;
 
-            tracing::info!(cell_id, up_votes, "cell restored");
+            let queued = enqueue_notifications(&mut *conn, cell_id, "restored").await?;
+            tracing::info!(cell_id, up_votes, queued, "cell restored");
             Ok(Status::Up)
         }
         Decision::NoChange => Ok(current),
     }
+}
+
+/// Queues one notification per subscriber of the cell. Call it inside the
+/// same transaction that changes the status (the "outbox" pattern).
+pub async fn enqueue_notifications(
+    conn: &mut PgConnection,
+    cell_id: i64,
+    kind: &str,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "INSERT INTO notifications (subscription_id, cell_id, kind)
+         SELECT id, cell_id, $2 FROM subscriptions WHERE cell_id = $1",
+    )
+    .bind(cell_id)
+    .bind(kind)
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 #[cfg(test)]

@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 
 use axum::{
+    Json,
     extract::{ConnectInfo, State},
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use hmac::{Hmac, Mac};
 use serde::Serialize;
@@ -37,6 +37,18 @@ pub fn verify_token(secret: &[u8], token: &str) -> Option<Uuid> {
     let signature = hex::decode(sig_part).ok()?;
     sign(secret, &id).verify_slice(&signature).ok()?;
     Some(id)
+}
+
+/// Reads "Authorization: Bearer <token>" and verifies it.
+pub fn device_from_headers(secret: &[u8], headers: &HeaderMap) -> Result<Uuid, AppError> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| AppError::Unauthorized("missing device token".to_string()))?;
+
+    verify_token(secret, token)
+        .ok_or_else(|| AppError::Unauthorized("invalid device token".to_string()))
 }
 
 #[derive(Serialize)]

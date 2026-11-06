@@ -6,16 +6,18 @@ mod read;
 mod reports;
 mod state;
 mod status;
+mod subscriptions;
+mod worker;
 
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
+    Router,
     extract::State,
     http::StatusCode,
-    routing::{get, post},
-    Router,
+    routing::{delete, get, post},
 };
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 
 use crate::state::AppState;
 
@@ -53,6 +55,7 @@ async fn main() {
         device_secret: Arc::new(secret.into_bytes()),
         trust_proxy,
     };
+    worker::spawn(state.pool.clone());
 
     let app = Router::new()
         .route("/health", get(health))
@@ -61,6 +64,11 @@ async fn main() {
         .route("/status", get(read::get_status))
         .route("/history", get(read::get_history))
         .route("/stats", get(read::get_stats))
+        .route(
+            "/subscriptions",
+            post(subscriptions::subscribe).get(subscriptions::list_subscriptions),
+        )
+        .route("/subscriptions/{id}", delete(subscriptions::unsubscribe))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")

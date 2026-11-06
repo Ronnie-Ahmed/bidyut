@@ -100,6 +100,7 @@ pub struct EventView {
     ended_at: Option<DateTime<Utc>>,
     ongoing: bool,
     duration_secs: i64,
+    closed_by: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -118,8 +119,8 @@ pub async fn get_history(
         return Ok(Json(HistoryResponse { events: vec![] }));
     };
 
-    let rows: Vec<(i64, DateTime<Utc>, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT id, started_at, ended_at FROM outage_events
+    let rows: Vec<(i64, DateTime<Utc>, Option<DateTime<Utc>>, Option<String>)> = sqlx::query_as(
+        "SELECT id, started_at, ended_at, closed_by FROM outage_events
          WHERE cell_id = $1
          ORDER BY started_at DESC
          LIMIT $2",
@@ -132,12 +133,13 @@ pub async fn get_history(
     let now = Utc::now();
     let events = rows
         .into_iter()
-        .map(|(id, started_at, ended_at)| EventView {
+        .map(|(id, started_at, ended_at, closed_by)| EventView {
             id,
             started_at,
             ended_at,
             ongoing: ended_at.is_none(),
             duration_secs: (ended_at.unwrap_or(now) - started_at).num_seconds().max(0),
+            closed_by,
         })
         .collect();
 

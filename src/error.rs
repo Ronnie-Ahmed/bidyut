@@ -1,13 +1,14 @@
 use axum::{
-    http::{header, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use serde_json::json;
 
 pub enum AppError {
     Validation(String),
     Unauthorized(String),
+    NotFound,
     RateLimited { retry_after_secs: u64 },
     Database(sqlx::Error),
 }
@@ -28,6 +29,9 @@ impl IntoResponse for AppError {
                 .into_response(),
             AppError::Unauthorized(msg) => {
                 (StatusCode::UNAUTHORIZED, Json(json!({ "error": msg }))).into_response()
+            }
+            AppError::NotFound => {
+                (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
             }
             AppError::RateLimited { retry_after_secs } => (
                 StatusCode::TOO_MANY_REQUESTS,

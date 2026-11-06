@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 
 use axum::{
+    Json,
     extract::{ConnectInfo, State},
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use serde::{Deserialize, Serialize};
 
@@ -73,10 +73,7 @@ pub async fn create_report(
     )
     .await?;
 
-    if !body.lat.is_finite()
-        || !body.lng.is_finite()
-        || !grid::in_bangladesh(body.lat, body.lng)
-    {
+    if !body.lat.is_finite() || !body.lng.is_finite() || !grid::in_bangladesh(body.lat, body.lng) {
         return Err(AppError::Validation(
             "location must be inside Bangladesh".to_string(),
         ));
