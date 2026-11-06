@@ -1,80 +1,44 @@
-name: CI
-
-on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
-
-# Least privilege: the token can only read the repository.
-permissions:
-  contents: read
-
-# A new push to the same PR cancels the older run.
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  CARGO_TERM_COLOR: always
-
-jobs:
-  test:
-    name: fmt, clippy, tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: bidyut
-          POSTGRES_PASSWORD: ci_only_throwaway_password
-          POSTGRES_DB: bidyut
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U bidyut"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
+services:
+  postgres:
+    image: postgres:16
     env:
-      # sqlx needs to connect to a default maintenance DB to manage test databases
-      DATABASE_URL: postgres://bidyut:ci_only_throwaway_password@127.0.0.1:5432/bidyut
-      REDIS_URL: redis://127.0.0.1:6379
-      DEVICE_TOKEN_SECRET: 1f15401bb8f6fa627dbd4f291103be493fea83cc2c546771fe4485b2ff1f66eb
-      RUST_LOG: info
+      POSTGRES_USER: bidyut
+      POSTGRES_PASSWORD: ci_only_throwaway_password
+      POSTGRES_DB: bidyut
+    ports:
+      - 5432:5432
+    options: >-
+      --health-cmd "pg_isready -U bidyut -d bidyut"
+      --health-interval 5s
+      --health-timeout 5s
+      --health-retries 10
+  redis:
+  image: redis:7
+  ports:
+    - 6379:6379
+  options: >-
+    --health-cmd "redis-cli ping"
+    --health-interval 5s
+    --health-timeout 5s
+    --health-retries 10
 
-    steps:
-      - name: Check out the code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
+steps:
+  - name: Check out the code
+    uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+    with:
+      persist-credentials: false
 
-      - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-          rustup default stable
-          rustc --version
+  - name: Install Rust toolchain
+    run: |
+      rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      rustup default stable
+      rustc --version
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+  - name: Check formatting
+    run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+  - name: Clippy
+    run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Tests
-        run: cargo test --locked --verbose
+  - name: Run tests
+    run: cargo test --locked --verbose
