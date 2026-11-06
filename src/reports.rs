@@ -1,4 +1,4 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -41,10 +41,7 @@ pub async fn create_report(
     State(pool): State<PgPool>,
     Json(body): Json<CreateReport>,
 ) -> Result<(StatusCode, Json<ReportCreated>), AppError> {
-    if !body.lat.is_finite()
-        || !body.lng.is_finite()
-        || !grid::in_bangladesh(body.lat, body.lng)
-    {
+    if !body.lat.is_finite() || !body.lng.is_finite() || !grid::in_bangladesh(body.lat, body.lng) {
         return Err(AppError::Validation(
             "location must be inside Bangladesh".to_string(),
         ));

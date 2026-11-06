@@ -3,12 +3,12 @@ mod grid;
 mod reports;
 
 use axum::{
+    Router,
     extract::State,
     http::StatusCode,
     routing::{get, post},
-    Router,
 };
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 
 #[tokio::main]
 async fn main() {
