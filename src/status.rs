@@ -62,7 +62,13 @@ const VOTES_SQL: &str = "
     FROM latest";
 
 /// Re-evaluates one cell. Must be called inside the transaction that
-/// inserted the report, so the row lock is held until commit.
+/// inserted the report.
+///
+/// LOCKING: the caller must already hold the cell's row lock. The report
+/// handler gets it from the `INSERT ... ON CONFLICT DO UPDATE` on `cells`,
+/// which runs before the report insert. Do not insert a report and call this
+/// without locking the cell first: the foreign key takes a weaker lock that
+/// conflicts with the FOR UPDATE below, and two concurrent requests can deadlock.
 pub async fn evaluate_cell(conn: &mut PgConnection, cell_id: i64) -> Result<Status, sqlx::Error> {
     // Locks the cell row, so concurrent reports for this cell queue up here.
     let (current, status_since): (String, DateTime<Utc>) =
@@ -99,6 +105,7 @@ pub async fn evaluate_cell(conn: &mut PgConnection, cell_id: i64) -> Result<Stat
 
             let queued = enqueue_notifications(&mut *conn, cell_id, "down").await?;
             tracing::info!(cell_id, down_votes, queued, "cell went down");
+            metrics::counter!("outages_started_total").increment(1);
             Ok(Status::Down)
         }
         Decision::GoUp => {
@@ -119,6 +126,7 @@ pub async fn evaluate_cell(conn: &mut PgConnection, cell_id: i64) -> Result<Stat
 
             let queued = enqueue_notifications(&mut *conn, cell_id, "restored").await?;
             tracing::info!(cell_id, up_votes, queued, "cell restored");
+            metrics::counter!("outages_restored_total").increment(1);
             Ok(Status::Up)
         }
         Decision::NoChange => Ok(current),

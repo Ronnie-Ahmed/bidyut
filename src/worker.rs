@@ -5,6 +5,9 @@ use uuid::Uuid;
 
 use crate::status;
 
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
 const DISPATCH_INTERVAL: Duration = Duration::from_secs(5);
 const EXPIRE_INTERVAL: Duration = Duration::from_secs(60);
 const BATCH: i64 = 50;
@@ -13,9 +16,11 @@ const MAX_ATTEMPTS: i32 = 5;
 /// An open outage with no outage report for this long is presumed over.
 const STALE_OUTAGE_SECS: f64 = 7200.0; // 2 hours
 
-pub fn spawn(pool: PgPool) {
-    tokio::spawn(dispatch_loop(pool.clone()));
-    tokio::spawn(expire_loop(pool));
+pub fn spawn(pool: PgPool, shutdown: CancellationToken) -> Vec<JoinHandle<()>> {
+    vec![
+        tokio::spawn(dispatch_loop(pool.clone(), shutdown.clone())),
+        tokio::spawn(expire_loop(pool, shutdown)),
+    ]
 }
 
 // ---------- notification delivery ----------
@@ -39,13 +44,20 @@ const CLAIM_SQL: &str = "
     JOIN subscriptions s ON s.id = c.subscription_id
     JOIN cells ce ON ce.id = c.cell_id";
 
-async fn dispatch_loop(pool: PgPool) {
+async fn dispatch_loop(pool: PgPool, shutdown: CancellationToken) {
     let mut ticker = tokio::time::interval(DISPATCH_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
-        ticker.tick().await;
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = shutdown.cancelled() => break,
+        }
+
         loop {
+            if shutdown.is_cancelled() {
+                break;
+            }
             match dispatch_batch(&pool).await {
                 // A full batch means more may be waiting: go again immediately.
                 Ok(n) if n >= BATCH as usize => continue,
@@ -57,8 +69,8 @@ async fn dispatch_loop(pool: PgPool) {
             }
         }
     }
+    tracing::info!("notification dispatcher stopped");
 }
-
 async fn dispatch_batch(pool: &PgPool) -> Result<usize, sqlx::Error> {
     let rows: Vec<(i64, Uuid, i32, i32, String, i32)> = sqlx::query_as(CLAIM_SQL)
         .bind(BATCH)
@@ -79,6 +91,7 @@ async fn dispatch_batch(pool: &PgPool) -> Result<usize, sqlx::Error> {
                 .bind(id)
                 .execute(pool)
                 .await?;
+                metrics::counter!("notifications_sent_total").increment(1);
             }
             Err(err) => {
                 tracing::warn!(id, attempts, "delivery failed: {err}");
@@ -90,6 +103,7 @@ async fn dispatch_batch(pool: &PgPool) -> Result<usize, sqlx::Error> {
                     .bind(&err)
                     .execute(pool)
                     .await?;
+                    metrics::counter!("notifications_failed_total").increment(1);
                 } else {
                     sqlx::query(
                         "UPDATE notifications
@@ -165,16 +179,21 @@ const CLOSE_SQL: &str = "
     WHERE e.id = l.id
       AND l.last_seen < now() - make_interval(secs => $2)";
 
-async fn expire_loop(pool: PgPool) {
+async fn expire_loop(pool: PgPool, shutdown: CancellationToken) {
     let mut ticker = tokio::time::interval(EXPIRE_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
-        ticker.tick().await;
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = shutdown.cancelled() => break,
+        }
+
         if let Err(e) = expire_stale_outages(&pool).await {
             tracing::error!("stale outage scan failed: {e}");
         }
     }
+    tracing::info!("stale outage scanner stopped");
 }
 
 async fn expire_stale_outages(pool: &PgPool) -> Result<(), sqlx::Error> {

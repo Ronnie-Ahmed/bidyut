@@ -31,7 +31,6 @@ impl ReportKind {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateReport {
-    device_token: String,
     kind: ReportKind,
     lat: f64,
     lng: f64,
@@ -62,8 +61,7 @@ pub async fn create_report(
     )
     .await?;
 
-    let device_id = device::verify_token(&state.device_secret, &body.device_token)
-        .ok_or_else(|| AppError::Unauthorized("invalid device token".to_string()))?;
+    let device_id = device::device_from_headers(&state.device_secret, &headers)?;
 
     ratelimit::check(
         &state.redis,
@@ -109,6 +107,7 @@ pub async fn create_report(
     let cell_status = status::evaluate_cell(&mut *tx, cell_id).await?;
 
     tx.commit().await?;
+    metrics::counter!("reports_total", "kind" => body.kind.as_str()).increment(1);
 
     Ok((
         StatusCode::CREATED,

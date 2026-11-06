@@ -63,6 +63,9 @@ pub async fn check(
     match outcome {
         Ok(Ok((count, _, ttl))) => {
             if count > limit {
+                // "rl:reports:ip:1.2.3.4" becomes the label "reports:ip"
+                let scope: String = key.split(':').skip(1).take(2).collect::<Vec<_>>().join(":");
+                metrics::counter!("rate_limited_total", "scope" => scope).increment(1);
                 Err(AppError::RateLimited {
                     retry_after_secs: ttl.max(1) as u64,
                 })
@@ -71,10 +74,12 @@ pub async fn check(
             }
         }
         Ok(Err(e)) => {
+            metrics::counter!("rate_limiter_failures_total").increment(1);
             tracing::error!("rate limiter error, allowing request: {e}");
             Ok(())
         }
         Err(_) => {
+            metrics::counter!("rate_limiter_failures_total").increment(1);
             tracing::error!("rate limiter timed out, allowing request");
             Ok(())
         }
