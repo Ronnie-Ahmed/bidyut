@@ -1,3 +1,6 @@
+permissions:
+  contents: read
+
 services:
   postgres:
     image: postgres:16
@@ -12,15 +15,16 @@ services:
       --health-interval 5s
       --health-timeout 5s
       --health-retries 10
+
   redis:
-  image: redis:7
-  ports:
-    - 6379:6379
-  options: >-
-    --health-cmd "redis-cli ping"
-    --health-interval 5s
-    --health-timeout 5s
-    --health-retries 10
+    image: redis:7
+    ports:
+      - 6379:6379
+    options: >-
+      --health-cmd "redis-cli ping"
+      --health-interval 5s
+      --health-timeout 5s
+      --health-retries 10
 
 steps:
   - name: Check out the code
@@ -38,7 +42,24 @@ steps:
     run: cargo fmt --all -- --check
 
   - name: Clippy
+    env:
+      DATABASE_URL: postgres://bidyut:ci_only_throwaway_password@127.0.0.1:5432/bidyut
     run: cargo clippy --locked --all-targets -- -D warnings
 
   - name: Run tests
-    run: cargo test --locked --verbose
+    env:
+      DATABASE_URL: postgres://bidyut:ci_only_throwaway_password@127.0.0.1:5432/bidyut
+      REDIS_URL: redis://127.0.0.1:6379
+      RUST_LOG: info
+      DEVICE_TOKEN_SECRET: 1f15401bb8f6fa627dbd4f291103be493fea83cc2c546771fe4485b2ff1f66eb
+      TRUST_PROXY: "false"
+      LOG_FORMAT: pretty
+      BIND_ADDR: 0.0.0.0:3000
+      METRICS_ADDR: 127.0.0.1:9090
+      DB_MAX_CONNECTIONS: 10
+      REQUEST_TIMEOUT_SECS: 10
+      MAX_BODY_BYTES: 16384
+    run: |
+      echo "Checking database configuration..."
+      test -n "$DATABASE_URL"
+      cargo test --locked --verbose
