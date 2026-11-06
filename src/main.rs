@@ -60,6 +60,14 @@ async fn main() {
         .await
         .expect("failed to connect to database");
 
+    if config.run_migrations {
+        sqlx::migrate!()
+            .run(&pool)
+            .await
+            .expect("failed to run migrations");
+        tracing::info!("migrations applied");
+    }
+
     let redis = redis::Client::open(config.redis_url.as_str())
         .expect("invalid REDIS_URL")
         .get_connection_manager()

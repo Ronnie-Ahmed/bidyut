@@ -18,6 +18,7 @@ pub struct Config {
     pub db_max_connections: u32,
     pub request_timeout: Duration,
     pub max_body_bytes: usize,
+    pub run_migrations: bool,
 }
 
 /// Trimmed value, with empty treated as unset.
@@ -106,6 +107,16 @@ impl Config {
                 false
             }
         };
+        let run_migrations = match value(get, "RUN_MIGRATIONS").as_deref() {
+            None | Some("false") => false,
+            Some("true") => true,
+            Some(other) => {
+                errors.push(format!(
+                    "RUN_MIGRATIONS must be \"true\" or \"false\" (got \"{other}\")"
+                ));
+                false
+            }
+        };
 
         let log_format = match value(get, "LOG_FORMAT").as_deref() {
             None | Some("pretty") => LogFormat::Pretty,
@@ -170,6 +181,7 @@ impl Config {
             db_max_connections,
             request_timeout: Duration::from_secs(timeout_secs),
             max_body_bytes,
+            run_migrations,
         })
     }
 }
