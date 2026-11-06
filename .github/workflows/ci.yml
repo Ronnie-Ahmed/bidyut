@@ -1,52 +1,17 @@
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
 permissions:
   contents: read
 
-services:
-  postgres:
-    image: postgres:16
-    env:
-      POSTGRES_USER: bidyut
-      POSTGRES_PASSWORD: ci_only_throwaway_password
-      POSTGRES_DB: bidyut
-    ports:
-      - 5432:5432
-    options: >-
-      --health-cmd "pg_isready -U bidyut -d bidyut"
-      --health-interval 5s
-      --health-timeout 5s
-      --health-retries 10
+jobs:
+  test:
+    runs-on: ubuntu-latest
 
-  redis:
-    image: redis:7
-    ports:
-      - 6379:6379
-    options: >-
-      --health-cmd "redis-cli ping"
-      --health-interval 5s
-      --health-timeout 5s
-      --health-retries 10
-
-steps:
-  - name: Check out the code
-    uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-    with:
-      persist-credentials: false
-
-  - name: Install Rust toolchain
-    run: |
-      rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      rustup default stable
-      rustc --version
-
-  - name: Check formatting
-    run: cargo fmt --all -- --check
-
-  - name: Clippy
-    env:
-      DATABASE_URL: postgres://bidyut:ci_only_throwaway_password@127.0.0.1:5432/bidyut
-    run: cargo clippy --locked --all-targets -- -D warnings
-
-  - name: Run tests
     env:
       DATABASE_URL: postgres://bidyut:ci_only_throwaway_password@127.0.0.1:5432/bidyut
       REDIS_URL: redis://127.0.0.1:6379
@@ -59,7 +24,57 @@ steps:
       DB_MAX_CONNECTIONS: 10
       REQUEST_TIMEOUT_SECS: 10
       MAX_BODY_BYTES: 16384
-    run: |
-      echo "Checking database configuration..."
-      test -n "$DATABASE_URL"
-      cargo test --locked --verbose
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bidyut
+          POSTGRES_PASSWORD: ci_only_throwaway_password
+          POSTGRES_DB: bidyut
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bidyut -d bidyut"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          rustc --version
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Verify service configuration
+        run: |
+          echo "Checking database configuration..."
+          test -n "$DATABASE_URL"
+          test -n "$REDIS_URL"
+          echo "DATABASE_URL is configured"
+          echo "REDIS_URL is configured"
+
+      - name: Run tests
+        run: cargo test --locked --verbose
