@@ -247,7 +247,7 @@ async fn expire_cell(pool: &PgPool, cell_id: i64) -> Result<(), sqlx::Error> {
         .execute(&mut *tx)
         .await?;
 
-        let queued = status::enqueue_notifications(&mut *tx, cell_id, "expired").await?;
+                let queued = status::enqueue_notifications(&mut tx, cell_id, "expired").await?;
         tracing::info!(cell_id, queued, "stale outage expired");
         metrics::counter!("outages_expired_total").increment(1);
     }

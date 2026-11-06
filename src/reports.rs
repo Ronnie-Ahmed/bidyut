@@ -104,7 +104,7 @@ pub async fn record_report(
     .fetch_one(&mut *tx)
     .await?;
 
-    let status = status::evaluate_cell(&mut *tx, cell_id).await?;
+    let status = status::evaluate_cell(&mut tx, cell_id).await?;
 
     tx.commit().await?;
 

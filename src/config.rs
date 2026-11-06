@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn minimal_config_gets_safe_defaults() {
         let get = lookup(&valid());
-        let cfg = Config::from_lookup(&get).ok().expect("should be valid");
+        let cfg = Config::from_lookup(&get).expect("should be valid");
         assert_eq!(cfg.bind_addr.port(), 3000);
         assert!(!cfg.trust_proxy);
         assert_eq!(cfg.log_format, LogFormat::Pretty);

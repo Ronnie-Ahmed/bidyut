@@ -12,15 +12,14 @@ const REDIS_TIMEOUT: Duration = Duration::from_millis(250);
 /// The client's IP. Behind a trusted proxy we take the LAST X-Forwarded-For
 /// entry, the one our own proxy appended. Earlier entries are client-supplied.
 pub fn client_ip(peer: SocketAddr, headers: &HeaderMap, trust_proxy: bool) -> IpAddr {
-    if trust_proxy {
-        if let Some(ip) = headers
+    if trust_proxy
+        && let Some(ip) = headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.rsplit(',').next())
             .and_then(|s| s.trim().parse::<IpAddr>().ok())
-        {
-            return ip;
-        }
+    {
+        return ip;
     }
     peer.ip()
 }

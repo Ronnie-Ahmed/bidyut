@@ -119,7 +119,8 @@ pub async fn get_history(
         return Ok(Json(HistoryResponse { events: vec![] }));
     };
 
-    let rows: Vec<(i64, DateTime<Utc>, Option<DateTime<Utc>>, Option<String>)> = sqlx::query_as(
+    type EventRow = (i64, DateTime<Utc>, Option<DateTime<Utc>>, Option<String>);
+    let rows: Vec<EventRow> = sqlx::query_as(
         "SELECT id, started_at, ended_at, closed_by FROM outage_events
          WHERE cell_id = $1
          ORDER BY started_at DESC
