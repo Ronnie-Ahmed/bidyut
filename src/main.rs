@@ -1,3 +1,4 @@
+mod bot;
 mod config;
 mod device;
 mod error;
@@ -14,6 +15,7 @@ mod shutdown;
 mod state;
 mod status;
 mod subscriptions;
+mod telegram;
 mod worker;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -91,7 +93,34 @@ async fn main() {
         }
     });
 
-    let workers = worker::spawn(pool.clone(), shutdown.clone());
+    let telegram: Option<Arc<telegram::Telegram>> = match config.telegram_bot_token.as_deref() {
+        Some(token) => {
+            let client =
+                telegram::Telegram::new(token).expect("failed to build the telegram client");
+            let username = client.get_me().await.unwrap_or_else(|e| {
+                eprintln!("telegram: could not verify the bot token: {e}");
+                std::process::exit(1);
+            });
+            if let Err(e) = client.delete_webhook().await {
+                tracing::warn!("could not clear a telegram webhook: {e}");
+            }
+            tracing::info!(bot = %username, "telegram bot enabled");
+            Some(Arc::new(client))
+        }
+        None => {
+            tracing::info!("telegram bot disabled (TELEGRAM_BOT_TOKEN is not set)");
+            None
+        }
+    };
+
+    let mut workers = worker::spawn(pool.clone(), shutdown.clone(), telegram.clone());
+    if let Some(client) = telegram {
+        workers.push(tokio::spawn(bot::run(
+            state.clone(),
+            client,
+            shutdown.clone(),
+        )));
+    }
     let metrics_server = tokio::spawn(observability::serve_metrics(
         config.metrics_addr,
         metrics_handle,

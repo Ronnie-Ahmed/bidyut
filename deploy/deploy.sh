@@ -59,11 +59,13 @@ cmd_init() {
     echo "POSTGRES_PASSWORD=$(openssl rand -hex 32)"
     echo "REDIS_PASSWORD=$(openssl rand -hex 32)"
     echo "DEVICE_TOKEN_SECRET=$(openssl rand -hex 32)"
+    echo "TELEGRAM_BOT_TOKEN="
   } > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
 
   log "Created $ENV_FILE (mode 600) with new random secrets."
   echo "Store a copy of it in a password manager. Losing DEVICE_TOKEN_SECRET invalidates every issued device token."
+  echo "Optional: put the PRODUCTION bot's token after TELEGRAM_BOT_TOKEN= in $ENV_FILE (blank = bot disabled)."
   echo "Next: ./deploy.sh deploy <full-commit-sha-from-the-GitHub-Packages-page>"
 }
 
@@ -85,6 +87,9 @@ preflight() {
     warn "$ENV_FILE had loose permissions; setting mode 600"
     chmod 600 "$ENV_FILE"
   fi
+
+  [ -n "$(get_env TELEGRAM_BOT_TOKEN)" ] \
+    || warn "TELEGRAM_BOT_TOKEN is empty in $ENV_FILE: the Telegram bot will be disabled."
 
   DOMAIN="$(get_env DOMAIN)"
   valid_domain "$DOMAIN" || die "DOMAIN in $ENV_FILE is not a valid domain name"

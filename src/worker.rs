@@ -1,26 +1,34 @@
 use std::time::Duration;
 
+use crate::{bot, status, telegram::Telegram};
 use sqlx::PgPool;
-use uuid::Uuid;
-
-use crate::status;
-
 use std::future::Future;
+use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 const DISPATCH_INTERVAL: Duration = Duration::from_secs(5);
 const EXPIRE_INTERVAL: Duration = Duration::from_secs(60);
 const BATCH: i64 = 50;
 const LEASE_SECS: f64 = 60.0;
 const MAX_ATTEMPTS: i32 = 5;
+const PRUNE_INTERVAL: Duration = Duration::from_secs(3600);
+const REPORT_RETENTION_SECS: f64 = 48.0 * 3600.0;
+const NOTIFICATION_RETENTION_SECS: f64 = 7.0 * 86400.0;
+const PRUNE_BATCH: i64 = 5000;
 /// An open outage with no outage report for this long is presumed over.
 const STALE_OUTAGE_SECS: f64 = 7200.0; // 2 hours
 
-pub fn spawn(pool: PgPool, shutdown: CancellationToken) -> Vec<JoinHandle<()>> {
+pub fn spawn(
+    pool: PgPool,
+    shutdown: CancellationToken,
+    telegram: Option<Arc<Telegram>>,
+) -> Vec<JoinHandle<()>> {
     vec![
-        tokio::spawn(dispatch_loop(pool.clone(), shutdown.clone())),
-        tokio::spawn(expire_loop(pool, shutdown)),
+        tokio::spawn(dispatch_loop(pool.clone(), shutdown.clone(), telegram)),
+        tokio::spawn(expire_loop(pool.clone(), shutdown.clone())),
+        tokio::spawn(prune_loop(pool, shutdown)),
     ]
 }
 
@@ -45,17 +53,34 @@ const CLAIM_SQL: &str = "
     JOIN subscriptions s ON s.id = c.subscription_id
     JOIN cells ce ON ce.id = c.cell_id";
 
-async fn default_send(
-    device_id: Uuid,
-    lat_idx: i32,
-    lng_idx: i32,
-    kind: String,
-) -> Result<(), String> {
-    deliver(device_id, lat_idx, lng_idx, &kind).await
-}
-async fn dispatch_loop(pool: PgPool, shutdown: CancellationToken) {
+// async fn default_send(
+//     device_id: Uuid,
+//     lat_idx: i32,
+//     lng_idx: i32,
+//     kind: String,
+// ) -> Result<(), String> {
+//     deliver(device_id, lat_idx, lng_idx, &kind).await
+// }
+async fn dispatch_loop(pool: PgPool, shutdown: CancellationToken, telegram: Option<Arc<Telegram>>) {
     let mut ticker = tokio::time::interval(DISPATCH_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    let send_pool = pool.clone();
+    let send = move |device_id: Uuid, lat_idx: i32, lng_idx: i32, kind: String| {
+        let pool = send_pool.clone();
+        let telegram = telegram.clone();
+        async move {
+            bot::deliver_alert(
+                &pool,
+                telegram.as_deref(),
+                device_id,
+                lat_idx,
+                lng_idx,
+                &kind,
+            )
+            .await
+        }
+    };
 
     loop {
         tokio::select! {
@@ -67,7 +92,7 @@ async fn dispatch_loop(pool: PgPool, shutdown: CancellationToken) {
             if shutdown.is_cancelled() {
                 break;
             }
-            match dispatch_batch(&pool, default_send).await {
+            match dispatch_batch(&pool, &send).await {
                 // A full batch means more may be waiting: go again immediately.
                 Ok(n) if n >= BATCH as usize => continue,
                 Ok(_) => break,
@@ -141,21 +166,21 @@ fn backoff_secs(attempts: i32) -> f64 {
     (30.0 * 2f64.powi((attempts - 1).clamp(0, 10))).min(1800.0)
 }
 
-fn message(kind: &str) -> &'static str {
-    match kind {
-        "down" => "Power outage reported in your area",
-        "restored" => "Power has been reported back in your area",
-        "expired" => "No recent reports: the outage in your area is presumed over",
-        _ => "Status update for your area",
-    }
-}
+// fn message(kind: &str) -> &'static str {
+//     match kind {
+//         "down" => "Power outage reported in your area",
+//         "restored" => "Power has been reported back in your area",
+//         "expired" => "No recent reports: the outage in your area is presumed over",
+//         _ => "Status update for your area",
+//     }
+// }
 
-/// The only place that knows how an alert leaves the system.
-/// For now it just logs. A real channel (e.g. a Telegram bot) replaces this body.
-async fn deliver(device_id: Uuid, lat_idx: i32, lng_idx: i32, kind: &str) -> Result<(), String> {
-    tracing::info!(%device_id, lat_idx, lng_idx, kind, "ALERT: {}", message(kind));
-    Ok(())
-}
+// /// The only place that knows how an alert leaves the system.
+// /// For now it just logs. A real channel (e.g. a Telegram bot) replaces this body.
+// async fn deliver(device_id: Uuid, lat_idx: i32, lng_idx: i32, kind: &str) -> Result<(), String> {
+//     tracing::info!(%device_id, lat_idx, lng_idx, kind, "ALERT: {}", message(kind));
+//     Ok(())
+// }
 
 // ---------- stale outage cleanup ----------
 
@@ -254,6 +279,75 @@ async fn expire_cell(pool: &PgPool, cell_id: i64) -> Result<(), sqlx::Error> {
 
     tx.commit().await?;
     Ok(())
+}
+
+/// Deletes old reports and finished notifications in small batches,
+/// so one run never holds long locks. Pending notifications are never deleted.
+pub(crate) async fn prune_old_data(pool: &PgPool) -> Result<(u64, u64), sqlx::Error> {
+    let mut reports = 0u64;
+    loop {
+        let n = sqlx::query(
+            "DELETE FROM reports WHERE id IN (
+                 SELECT id FROM reports
+                 WHERE created_at < now() - make_interval(secs => $1)
+                 LIMIT $2)",
+        )
+        .bind(REPORT_RETENTION_SECS)
+        .bind(PRUNE_BATCH)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        reports += n;
+        if n < PRUNE_BATCH as u64 {
+            break;
+        }
+    }
+
+    let mut notifications = 0u64;
+    loop {
+        let n = sqlx::query(
+            "DELETE FROM notifications WHERE id IN (
+                 SELECT id FROM notifications
+                 WHERE status <> 'pending'
+                   AND created_at < now() - make_interval(secs => $1)
+                 LIMIT $2)",
+        )
+        .bind(NOTIFICATION_RETENTION_SECS)
+        .bind(PRUNE_BATCH)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        notifications += n;
+        if n < PRUNE_BATCH as u64 {
+            break;
+        }
+    }
+
+    Ok((reports, notifications))
+}
+
+async fn prune_loop(pool: PgPool, shutdown: CancellationToken) {
+    let mut ticker = tokio::time::interval(PRUNE_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = shutdown.cancelled() => break,
+        }
+
+        match prune_old_data(&pool).await {
+            Ok((reports, notifications)) => {
+                if reports + notifications > 0 {
+                    tracing::info!(reports, notifications, "old data pruned");
+                }
+                metrics::counter!("reports_pruned_total").increment(reports);
+                metrics::counter!("notifications_pruned_total").increment(notifications);
+            }
+            Err(e) => tracing::error!("pruning failed: {e}"),
+        }
+    }
+    tracing::info!("pruner stopped");
 }
 
 #[cfg(test)]

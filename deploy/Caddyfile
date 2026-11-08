@@ -1,0 +1,8 @@
+{$DOMAIN} {
+	encode zstd gzip
+	header {
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	reverse_proxy app:3000
+}
