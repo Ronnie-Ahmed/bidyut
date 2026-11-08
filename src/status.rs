@@ -4,8 +4,8 @@ use sqlx::{
 };
 
 const WINDOW_SECS: f64 = 600.0; // 10 minutes
-const DOWN_THRESHOLD: i64 = 3;
-const UP_THRESHOLD: i64 = 2;
+pub const DOWN_THRESHOLD: i64 = 3;
+pub const UP_THRESHOLD: i64 = 2;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Status {

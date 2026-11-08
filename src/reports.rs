@@ -17,9 +17,9 @@ use crate::{
     status::{self, Status},
 };
 
-const REPORT_WINDOW_SECS: i64 = 600; // 10 minutes
+pub const REPORT_WINDOW_SECS: i64 = 600; // 10 minutes
 const REPORTS_PER_IP: i64 = 60;
-const REPORTS_PER_DEVICE: i64 = 6;
+pub const REPORTS_PER_DEVICE: i64 = 6;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -92,15 +92,13 @@ pub async fn record_report(
     .await?;
 
     let report_id: i64 = sqlx::query_scalar(
-        "INSERT INTO reports (cell_id, device_id, kind, lat, lng, created_at)
-         VALUES ($1, $2, $3, $4, $5, clock_timestamp())
+        "INSERT INTO reports (cell_id, device_id, kind, created_at)
+         VALUES ($1, $2, $3, clock_timestamp())
          RETURNING id",
     )
     .bind(cell_id)
     .bind(device_id)
     .bind(kind.as_str())
-    .bind(lat)
-    .bind(lng)
     .fetch_one(&mut *tx)
     .await?;
 

@@ -19,6 +19,7 @@ pub struct Config {
     pub request_timeout: Duration,
     pub max_body_bytes: usize,
     pub run_migrations: bool,
+    pub telegram_bot_token: Option<String>,
 }
 
 /// Trimmed value, with empty treated as unset.
@@ -68,6 +69,19 @@ fn in_range<T: PartialOrd + std::fmt::Display + Copy>(
     }
 }
 
+fn valid_bot_token(t: &str) -> bool {
+    match t.split_once(':') {
+        Some((id, secret)) => {
+            !id.is_empty()
+                && id.chars().all(|c| c.is_ascii_digit())
+                && secret.len() >= 30
+                && secret
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        }
+        None => false,
+    }
+}
 impl Config {
     pub fn from_env() -> Result<Config, Vec<String>> {
         Config::from_lookup(&|key| std::env::var(key).ok())
@@ -115,6 +129,18 @@ impl Config {
                     "RUN_MIGRATIONS must be \"true\" or \"false\" (got \"{other}\")"
                 ));
                 false
+            }
+        };
+        let telegram_bot_token = match value(get, "TELEGRAM_BOT_TOKEN") {
+            None => None,
+            Some(token) if valid_bot_token(&token) => Some(token),
+            Some(_) => {
+                // never echo the value: it is a secret
+                errors.push(
+                    "TELEGRAM_BOT_TOKEN does not look like a bot token (expected 123456789:AAB...)"
+                        .into(),
+                );
+                None
             }
         };
 
@@ -182,6 +208,7 @@ impl Config {
             request_timeout: Duration::from_secs(timeout_secs),
             max_body_bytes,
             run_migrations,
+            telegram_bot_token,
         })
     }
 }
@@ -252,5 +279,22 @@ mod tests {
         let get = lookup(&pairs);
         let errors = Config::from_lookup(&get).err().expect("should fail");
         assert!(errors.iter().any(|e| e.contains("DB_MAX_CONNECTIONS")));
+    }
+
+    #[test]
+    fn bot_token_is_optional() {
+        let get = lookup(&valid());
+        let cfg = Config::from_lookup(&get).expect("should be valid");
+        assert!(cfg.telegram_bot_token.is_none());
+    }
+
+    #[test]
+    fn bot_token_shape_is_checked() {
+        assert!(valid_bot_token(
+            "123456789:AAEhBOweik6ad9r_QXMENQjcrTu1Q0xDEFg"
+        ));
+        assert!(!valid_bot_token("nonsense"));
+        assert!(!valid_bot_token("12345:short"));
+        assert!(!valid_bot_token("abc:AAEhBOweik6ad9r_QXMENQjcrTu1Q0xDEFg"));
     }
 }

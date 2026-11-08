@@ -10,11 +10,15 @@ use std::{
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::bot::{
+    act_follow, act_list, act_report, act_stop, deliver_alert, device_for_telegram_user,
+    register_chat,
+};
 use crate::{
     grid,
     reports::{ReportKind, record_report},
     status::Status,
-    worker::{dispatch_batch, expire_stale_outages},
+    worker::{dispatch_batch, expire_stale_outages, prune_old_data},
 };
 
 // Dhaka (cell 2381/9041) and a second, far-away cell.
@@ -60,6 +64,9 @@ async fn cell_status(pool: &PgPool) -> String {
         .fetch_one(pool)
         .await
         .unwrap()
+}
+fn tg_device(user: i64) -> Uuid {
+    device_for_telegram_user(b"test-secret-test-secret-test-secret", user)
 }
 
 /// Moves everything back in time, as if it all happened `minutes` ago.
@@ -668,4 +675,119 @@ async fn a_crashed_workers_claim_is_retried_after_the_lease(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!((status.as_str(), attempts), ("sent", 2));
+}
+#[sqlx::test]
+async fn telegram_users_vote_once_each(pool: PgPool) {
+    let cell = grid::cell_for(LAT, LNG);
+    for user in [1, 2] {
+        act_report(&pool, tg_device(user), ReportKind::Outage, cell)
+            .await
+            .unwrap();
+    }
+    // user 1 again: still only two distinct voters
+    act_report(&pool, tg_device(1), ReportKind::Outage, cell)
+        .await
+        .unwrap();
+    assert_eq!(cell_status(&pool).await, "up");
+
+    act_report(&pool, tg_device(3), ReportKind::Outage, cell)
+        .await
+        .unwrap();
+    assert_eq!(cell_status(&pool).await, "down");
+}
+
+#[sqlx::test]
+async fn follow_list_and_stop(pool: PgPool) {
+    let who = tg_device(20);
+    register_chat(&pool, who, 777).await.unwrap();
+    let cell = grid::cell_for(LAT, LNG);
+
+    act_follow(&pool, who, cell).await.unwrap();
+    act_follow(&pool, who, cell).await.unwrap(); // idempotent
+    assert_eq!(count(&pool, "SELECT COUNT(*) FROM subscriptions").await, 1);
+
+    let listed = act_list(&pool, who).await.unwrap();
+    assert!(listed.text.contains("maps.google.com"));
+    assert!(listed.keyboard.is_some());
+
+    act_stop(&pool, who).await.unwrap();
+    assert_eq!(count(&pool, "SELECT COUNT(*) FROM subscriptions").await, 0);
+    assert_eq!(count(&pool, "SELECT COUNT(*) FROM telegram_chats").await, 0);
+}
+
+#[sqlx::test]
+async fn bot_users_hit_the_same_subscription_limit(pool: PgPool) {
+    let who = tg_device(30);
+    for i in 0..5 {
+        let cell = grid::CellIndex {
+            lat_idx: 2300 + i,
+            lng_idx: 9000,
+        };
+        act_follow(&pool, who, cell).await.unwrap();
+    }
+    let sixth = act_follow(
+        &pool,
+        who,
+        grid::CellIndex {
+            lat_idx: 2400,
+            lng_idx: 9000,
+        },
+    )
+    .await;
+    assert!(matches!(sixth, Err(crate::error::AppError::Validation(_))));
+}
+
+#[sqlx::test]
+async fn alerts_need_a_chat_and_a_configured_bot(pool: PgPool) {
+    let with_chat = tg_device(10);
+    let without_chat = tg_device(11);
+    register_chat(&pool, with_chat, 555).await.unwrap();
+
+    // no chat on file (for example a device registered through the HTTP API): nothing to send
+    assert_eq!(
+        deliver_alert(&pool, None, without_chat, 2381, 9041, "down").await,
+        Ok(())
+    );
+    // a chat exists but the bot is off: the alert must fail so it is retried, never lost
+    assert!(
+        deliver_alert(&pool, None, with_chat, 2381, 9041, "down")
+            .await
+            .is_err()
+    );
+}
+
+#[sqlx::test]
+async fn old_reports_and_finished_alerts_are_pruned(pool: PgPool) {
+    subscribe(&pool, device(), LAT, LNG).await;
+    take_down(&pool).await; // 3 reports + a pending "down" alert
+
+    let sent = Sent::default();
+    dispatch_batch(&pool, recorder(&sent)).await.unwrap(); // the alert becomes 'sent'
+
+    restore(&pool).await; // 2 more reports + a pending "restored" alert
+
+    // everything is now 3 days old, and the notifications 8 days old
+    age_everything(&pool, 3 * 24 * 60).await;
+    sqlx::query("UPDATE notifications SET created_at = created_at - interval '8 days'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // one fresh report must survive
+    report(&pool, device(), ReportKind::Outage).await;
+
+    let (reports, notifications) = prune_old_data(&pool).await.unwrap();
+    assert_eq!(reports, 5);
+    assert_eq!(notifications, 1); // only the finished one
+
+    assert_eq!(count(&pool, "SELECT COUNT(*) FROM reports").await, 1);
+    // the pending alert is never pruned, however old
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT COUNT(*) FROM notifications WHERE status = 'pending'"
+        )
+        .await,
+        1
+    );
 }

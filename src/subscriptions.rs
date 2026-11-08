@@ -1,14 +1,15 @@
+use crate::{device, error::AppError, grid, ratelimit, state::AppState};
 use axum::{
     Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use uuid::Uuid;
 
-use crate::{device, error::AppError, grid, ratelimit, state::AppState};
-
+pub const SUBSCRIBE_PER_DEVICE_PER_HOUR: i64 = 20;
 const MAX_SUBSCRIPTIONS_PER_DEVICE: i64 = 5;
-const SUBSCRIBE_PER_DEVICE_PER_HOUR: i64 = 20;
 
 #[derive(Debug, Deserialize)]
 pub struct SubscribeBody {
@@ -29,29 +30,13 @@ pub struct SubscriptionList {
     subscriptions: Vec<SubscriptionView>,
 }
 
-pub async fn subscribe(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<SubscribeBody>,
-) -> Result<Json<SubscriptionView>, AppError> {
-    let device_id = device::device_from_headers(&state.device_secret, &headers)?;
-
-    ratelimit::check(
-        &state.redis,
-        &format!("rl:subs:dev:{device_id}"),
-        SUBSCRIBE_PER_DEVICE_PER_HOUR,
-        3600,
-    )
-    .await?;
-
-    if !body.lat.is_finite() || !body.lng.is_finite() || !grid::in_bangladesh(body.lat, body.lng) {
-        return Err(AppError::Validation(
-            "location must be inside Bangladesh".to_string(),
-        ));
-    }
-    let cell = grid::cell_for(body.lat, body.lng);
-
-    let mut tx = state.pool.begin().await?;
+/// The core of "subscribe": no HTTP concerns, shared by the API and the bot.
+pub async fn add_subscription(
+    pool: &PgPool,
+    device_id: Uuid,
+    cell: grid::CellIndex,
+) -> Result<(i64, String), AppError> {
+    let mut tx = pool.begin().await?;
 
     let (cell_id, status): (i64, String) = sqlx::query_as(
         "INSERT INTO cells (lat_idx, lng_idx) VALUES ($1, $2)
@@ -63,9 +48,6 @@ pub async fn subscribe(
     .fetch_one(&mut *tx)
     .await?;
 
-    // Re-subscribing to a cell you already follow is allowed at the limit,
-    // so we count only the *other* cells. Two simultaneous requests could
-    // overshoot the cap by one. Acceptable for a soft limit.
     let others: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM subscriptions WHERE device_id = $1 AND cell_id <> $2",
     )
@@ -91,6 +73,32 @@ pub async fn subscribe(
     .await?;
 
     tx.commit().await?;
+    Ok((id, status))
+}
+
+pub async fn subscribe(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SubscribeBody>,
+) -> Result<Json<SubscriptionView>, AppError> {
+    let device_id = device::device_from_headers(&state.device_secret, &headers)?;
+
+    ratelimit::check(
+        &state.redis,
+        &format!("rl:subs:dev:{device_id}"),
+        SUBSCRIBE_PER_DEVICE_PER_HOUR,
+        3600,
+    )
+    .await?;
+
+    if !body.lat.is_finite() || !body.lng.is_finite() || !grid::in_bangladesh(body.lat, body.lng) {
+        return Err(AppError::Validation(
+            "location must be inside Bangladesh".to_string(),
+        ));
+    }
+    let cell = grid::cell_for(body.lat, body.lng);
+
+    let (id, status) = add_subscription(&state.pool, device_id, cell).await?;
 
     Ok(Json(SubscriptionView {
         id,
@@ -99,7 +107,6 @@ pub async fn subscribe(
         status,
     }))
 }
-
 pub async fn list_subscriptions(
     State(state): State<AppState>,
     headers: HeaderMap,

@@ -1,0 +1,96 @@
+services:
+  app:
+    image: ghcr.io/OWNER/bidyut:${IMAGE_TAG}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://bidyut:${POSTGRES_PASSWORD}@postgres:5432/bidyut
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      DEVICE_TOKEN_SECRET: ${DEVICE_TOKEN_SECRET}
+      # blank disables the Telegram bot; use a PRODUCTION bot, never the development one
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      BIND_ADDR: 0.0.0.0:3000
+      TRUST_PROXY: "true"
+      LOG_FORMAT: json
+      RUN_MIGRATIONS: "true"
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3000 && printf 'GET /livez HTTP/1.0\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q 200"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+      - internal
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bidyut
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: bidyut
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bidyut -d bidyut"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - internal
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    # Only rate-limit counters live here, so nothing is persisted.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--save", "", "--appendonly", "no"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping 2>/dev/null | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - edge
+
+networks:
+  edge:
+  internal:
+    internal: true # no route to the internet, only container-to-container
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
